@@ -1,0 +1,8 @@
+fastapi==0.141.1
+uvicorn==0.52.3
+pydantic==2.13.4
+joblib==1.5.3
+numpy==2.5.2
+pandas==3.0.5
+xgboost==3.4.0
+fpdf2==2.8.8

@@ -1,0 +1,17 @@
+{
+  "name": "oryares-engine-desktop",
+  "version": "1.0.0",
+  "description": "Oryares Engine Predictive Maintenance - offline desktop application",
+  "author": "Oryares",
+  "license": "MIT",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir --config electron-builder.yml",
+    "dist": "electron-builder --win --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3"
+  }
+}
