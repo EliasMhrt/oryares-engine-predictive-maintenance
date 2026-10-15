@@ -6,6 +6,8 @@ import { RealEngine, type EngineMode } from "./RealEngine";
 
 interface EngineTwinPanelProps {
   rulCycles: number;
+  // Normalized throttle (0..1) that scales the twin's spin speed alongside health.
+  throttle: number;
 }
 
 const MODES: EngineMode[] = ["standard", "cutaway"];
@@ -166,7 +168,7 @@ function WebGLGuard({
   return null;
 }
 
-function EngineScene({ rulCycles, mode }: { rulCycles: number; mode: EngineMode }) {
+function EngineScene({ rulCycles, mode, throttle }: { rulCycles: number; mode: EngineMode; throttle: number }) {
   return (
     <>
       {/* Cinematic Lighting Setup */}
@@ -185,17 +187,21 @@ function EngineScene({ rulCycles, mode }: { rulCycles: number; mode: EngineMode 
       </Environment>
 
       {/* The Actual Engine Model */}
-      <RealEngine rul={rulCycles} mode={mode} position={[0, -0.5, 0]} scale={0.6} />
+      <RealEngine rul={rulCycles} mode={mode} throttle={throttle} position={[0, -0.5, 0]} scale={0.6} />
 
       {/* Ground Shadow for Realism — render the depth pass once; it is static
           and re-rendering it every frame just adds GPU pressure on weak iGPUs. */}
       <ContactShadows position={[0, -1.5, 0]} opacity={0.6} scale={10} blur={2.5} far={4} color="#000000" frames={1} />
 
-      {/* User Controls: Allow zooming and panning */}
+      {/* User Controls: Allow rotating the engine on both axes (full vertical
+          range) as well as zooming and panning. */}
       <OrbitControls
+        makeDefault
         enablePan={true}
         enableZoom={true}
-        maxPolarAngle={Math.PI / 1.5}
+        enableRotate={true}
+        minPolarAngle={0}
+        maxPolarAngle={Math.PI}
         minDistance={3}
         maxDistance={12}
       />
@@ -205,7 +211,7 @@ function EngineScene({ rulCycles, mode }: { rulCycles: number; mode: EngineMode 
 
 // memo: the parent re-renders on every slider tick, but the 3D scene only needs
 // to update when the predicted RUL actually changes.
-function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
+function EngineTwinPanel({ rulCycles, throttle }: EngineTwinPanelProps) {
   const [mode, setMode] = useState<EngineMode>("standard");
   const [webgl, setWebgl] = useState<WebGLSupport>(() => detectWebGL());
   const [contextLost, setContextLost] = useState(false);
@@ -338,7 +344,7 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
             >
               <CanvasErrorBoundary>
                 <Suspense fallback={<SceneFallback title="Loading 3D engine..." detail="Preparing the digital twin." />}>
-                  <EngineScene rulCycles={rulCycles} mode={mode} />
+                  <EngineScene rulCycles={rulCycles} mode={mode} throttle={throttle} />
                   <WebGLGuard onLost={handleContextLost} onRestored={handleContextRestored} onRenderer={handleRenderer} />
                 </Suspense>
               </CanvasErrorBoundary>

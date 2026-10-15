@@ -69,9 +69,12 @@ function levelColor(level: EngineLevel): string {
 type EngineProps = React.JSX.IntrinsicElements['group'] & {
   rul?: number
   mode?: EngineMode
+  // Normalized throttle (0..1). Scales the spin speed; the middle of the slider
+  // keeps the engine at roughly its previous (full-health) speed.
+  throttle?: number
 }
 
-export function RealEngine({ rul = 100, mode = 'standard', ...props }: EngineProps) {
+export function RealEngine({ rul = 100, mode = 'standard', throttle = 0.5, ...props }: EngineProps) {
   const level = getEngineLevel(rul)
   const group = React.useRef<THREE.Group>(null)
   const shellRef = useRef<THREE.Group>(null)
@@ -94,16 +97,21 @@ export function RealEngine({ rul = 100, mode = 'standard', ...props }: EnginePro
       engineAction.play();
     }
 
-    // Control the speed from the discrete level only (thresholds match the
-    // backend risk levels). Depending on the level instead of the raw RUL
-    // means dragging a slider no longer restarts/renconfigures the mixer.
-    switch (level) {
-      case 'healthy': engineAction.timeScale = 1; break;   // 100% normal speed
-      case 'warning': engineAction.timeScale = 0.6; break; // 60% speed
-      case 'critical': engineAction.timeScale = 0.2; break; // 20% speed
-      case 'stopped': engineAction.timeScale = 0; break;   // STOP the engine
-    }
-  }, [actions, level]);
+    // Spin speed = health (discrete level) x throttle (continuous). Using the
+    // discrete level for the health part means dragging the telemetry sliders
+    // never restarts/reconfigures the mixer; the throttle part is applied via
+    // timeScale, which is cheap and does not recompile shaders.
+    const healthFactor =
+      level === 'healthy' ? 1 :
+      level === 'warning' ? 0.6 :
+      level === 'critical' ? 0.2 : 0;
+
+    // Map throttle 0..1 -> 0.25..1.5 so the middle of the slider is ~unchanged.
+    const clampedThrottle = Math.min(1, Math.max(0, throttle));
+    const throttleFactor = 0.25 + 1.25 * clampedThrottle;
+
+    engineAction.timeScale = healthFactor * throttleFactor;
+  }, [actions, level, throttle]);
 
   // 2. Apply cutaway view transform
   useEffect(() => {

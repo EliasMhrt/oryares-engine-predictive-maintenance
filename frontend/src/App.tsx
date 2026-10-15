@@ -17,6 +17,11 @@ const healthyPreset: TelemetryInput = {
 type ChartDataPoint = { time: string; rul: number; };
 type SensorKey = keyof Omit<TelemetryInput, "engine_id" | "cycle">;
 
+// Bounds of the "Setting 2 (Throttle)" slider, mirrored from sensorCategories.
+// Used to normalize the throttle to 0..1 for the 3D twin's spin speed.
+const THROTTLE_MIN = -0.001;
+const THROTTLE_MAX = 0.001;
+
 const sensorCategories = [
   {
     title: "⚙️ Operational Settings",
@@ -182,6 +187,14 @@ export default function App() {
       default: return "normal";
     }
   };
+
+  // Normalized throttle driving the 3D twin's spin speed. Deliberately NOT
+  // routed through the throttled twinRul path so the fan reacts immediately
+  // while the throttle slider is dragged.
+  const throttleLevel = Math.min(
+    1,
+    Math.max(0, (telemetry.setting_2 - THROTTLE_MIN) / (THROTTLE_MAX - THROTTLE_MIN))
+  );
 
   return (
     <div className="dashboard-container">
@@ -403,7 +416,7 @@ export default function App() {
         {/* 3D Digital Twin: spans both grid columns beneath the controls and results */}
         {prediction && (
           <div style={{ gridColumn: "1 / -1", gridRow: "2", height: "520px" }}>
-            <EngineTwinPanel rulCycles={twinRul} />
+            <EngineTwinPanel rulCycles={twinRul} throttle={throttleLevel} />
           </div>
         )}
       </div>
