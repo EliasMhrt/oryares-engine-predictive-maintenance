@@ -64,6 +64,36 @@ SENSOR_LABELS: dict[str, str] = {
     "sensor_21": "LPT Coolant Bleed",
 }
 
+# Healthy baseline per channel, mirrored from the frontend "healthy preset".
+# Surfaces in the PDF report as the recommended telemetry value to compare the
+# current reading against.
+RECOMMENDED_FEATURES: dict[str, float] = {
+    "setting_1": 0.0,
+    "setting_2": 0.0,
+    "setting_3": 100.0,
+    "sensor_1": 518.67,
+    "sensor_2": 642.38,
+    "sensor_3": 1586.84,
+    "sensor_4": 1402.76,
+    "sensor_5": 14.62,
+    "sensor_6": 21.61,
+    "sensor_7": 553.95,
+    "sensor_8": 2388.06,
+    "sensor_9": 9056.01,
+    "sensor_10": 1.30,
+    "sensor_11": 47.35,
+    "sensor_12": 521.91,
+    "sensor_13": 2388.06,
+    "sensor_14": 8137.37,
+    "sensor_15": 8.4183,
+    "sensor_16": 0.03,
+    "sensor_17": 392.0,
+    "sensor_18": 2388.0,
+    "sensor_19": 100.0,
+    "sensor_20": 38.93,
+    "sensor_21": 23.36,
+}
+
 app = FastAPI(
     title="Oryares Aircraft Engine RUL API",
     version="1.0.0",
@@ -251,33 +281,59 @@ def build_pdf_report(payload: TelemetryInput, result: PredictionResponse) -> byt
 
     pdf.ln(8)
 
-    # Telemetry snapshot: all 24 channels
+    # Telemetry snapshot: all 24 channels with recommended values and deviation
     pdf.set_font("helvetica", "B", 12)
     pdf.set_text_color(0, 0, 0)
-    pdf.cell(0, 8, "2. Telemetry Snapshot - All 24 Channels", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, "2. Telemetry Snapshot - Recommended Values & Deviation", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 8)
+    pdf.cell(
+        0,
+        5,
+        "Recommended = healthy baseline. Deviation = Current - Recommended.",
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
     pdf.ln(2)
 
     values = payload.model_dump()
-    rows = [
-        (str(idx), SENSOR_LABELS.get(name, name), f"{values[name]:.6g}")
-        for idx, name in enumerate(FEATURE_NAMES, start=1)
-    ]
+    rows = []
+    for idx, name in enumerate(FEATURE_NAMES, start=1):
+        current = float(values[name])
+        recommended = float(RECOMMENDED_FEATURES.get(name, 0.0))
+        delta = current - recommended
+        if recommended != 0:
+            deviation = f"{delta:+.6g} ({delta / abs(recommended) * 100:+.2f}%)"
+        else:
+            deviation = f"{delta:+.6g}"
+        rows.append(
+            (
+                str(idx),
+                SENSOR_LABELS.get(name, name),
+                f"{current:.6g}",
+                f"{recommended:.6g}",
+                deviation,
+            )
+        )
     with pdf.table(
-        col_widths=(12, 110, 64),
+        col_widths=(10, 62, 32, 34, 48),
         borders_layout="SINGLE_TOP_LINE",
-        line_height=6.5,
+        line_height=6,
         text_align="LEFT",
 
     ) as table:
         header = table.row()
         header.cell("#")
         header.cell("Channel")
-        header.cell("Value")
-        for index, channel, value in rows:
+        header.cell("Current")
+        header.cell("Recommended")
+        header.cell("Deviation")
+        for index, channel, current, recommended, deviation in rows:
             row = table.row()
             row.cell(index)
             row.cell(channel)
-            row.cell(value)
+            row.cell(current)
+            row.cell(recommended)
+            row.cell(deviation)
 
     pdf.ln(6)
     pdf.set_font("helvetica", "I", 8)
