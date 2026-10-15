@@ -228,8 +228,11 @@ export default function App() {
         </p>
       </header>
 
-      {/* Main Layout Wrapper: Relative positioning allows the button to float over it */}
-      <div style={{ display: "flex", position: "relative", gap: isSidebarOpen ? "2rem" : "0", transition: "gap 0.3s ease-in-out" }}>
+      {/* Main Layout Wrapper: Relative positioning allows the button to float over it.
+          CSS grid: row 1 holds the telemetry controls beside the results/chart, and
+          row 2 lets the 3D twin span the full width so it covers the space under
+          the controls instead of leaving an empty gap. */}
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gridTemplateRows: "auto auto", columnGap: isSidebarOpen ? "2rem" : "0", rowGap: "1rem", transition: "column-gap 0.3s ease-in-out", position: "relative", alignItems: "stretch" }}>
         
         {/* NEW: Floating Chevron Toggle */}
         <div style={{ 
@@ -272,14 +275,15 @@ export default function App() {
 
         {/* Retractable Telemetry Controls Container */}
         <div style={{ 
+          gridColumn: "1",
+          gridRow: "1",
           width: isSidebarOpen ? "380px" : "0px",
           opacity: isSidebarOpen ? 1 : 0,
           visibility: isSidebarOpen ? "visible" : "hidden",
-          flexShrink: 0, 
           transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           overflow: "hidden" 
         }}>
-          <div className="control-panel" style={{ width: "80%", height: "calc(100vh - 150px)", overflowY: "auto", margin: 0 }}>
+          <div className="control-panel" style={{ width: "80%", height: "100%", minHeight: "calc(100vh - 150px)", overflowY: "auto", margin: 0 }}>
             <div className="panel-header" style={{ position: "sticky", top: 0, backgroundColor: "#1f2937", zIndex: 10, paddingBottom: "10px", borderBottom: "1px solid #374151", display: "flex", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                 <SlidersHorizontal size={20} className="panel-icon" />
@@ -327,8 +331,8 @@ export default function App() {
         </div>
 
         {/* Right Column: Output Results & Chart */}
-        {error && <p className="error-message">{error}</p>}
-        <div style={{ flexGrow: 1, display: "flex", flexDirection: "column", gap: "1rem", minWidth: 10 }}>
+        <div style={{ gridColumn: "2", gridRow: "1", display: "flex", flexDirection: "column", gap: "1rem", minWidth: 10 }}>
+          {error && <p className="error-message" style={{ margin: 0 }}>{error}</p>}
           {prediction ? (
             <>
               <div className="results-grid">
@@ -388,11 +392,6 @@ export default function App() {
                   </ResponsiveContainer>
                 </div>
               </div>
-
-              {/* NEW: Render the 3D Engine Component */}
-              <EngineTwinPanel
-                rulCycles={twinRul}
-              />
             </>
           ) : (
             <div className="card" style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280' }}>
@@ -400,6 +399,13 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* 3D Digital Twin: spans both grid columns beneath the controls and results */}
+        {prediction && (
+          <div style={{ gridColumn: "1 / -1", gridRow: "2", height: "520px" }}>
+            <EngineTwinPanel rulCycles={twinRul} />
+          </div>
+        )}
       </div>
     </div>
   );

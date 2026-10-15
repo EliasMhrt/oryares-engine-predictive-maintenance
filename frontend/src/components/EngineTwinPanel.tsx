@@ -255,7 +255,7 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
   const usingDiscreteGpu = /nvidia|rtx|geforce/i.test(gpu);
 
   return (
-    <div className="card" style={{ flexGrow: 1, minHeight: "500px", display: "flex", flexDirection: "column", padding: "1.5rem" }}>
+    <div className="card" style={{ height: "100%", minHeight: "500px", display: "flex", flexDirection: "column", padding: "1.5rem" }}>
 
       {/* Panel Header */}
       <div className="panel-header" style={{ marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
