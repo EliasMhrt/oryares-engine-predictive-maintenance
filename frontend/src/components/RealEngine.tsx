@@ -106,9 +106,10 @@ export function RealEngine({ rul = 100, mode = 'standard', throttle = 0.5, ...pr
       level === 'warning' ? 0.6 :
       level === 'critical' ? 0.2 : 0;
 
-    // Map throttle 0..1 -> 0.25..1.5 so the middle of the slider is ~unchanged.
+    // Map throttle 0..1 -> 0.25..1.75 so the middle of the slider is ~unchanged
+    // and full throttle spins noticeably faster.
     const clampedThrottle = Math.min(1, Math.max(0, throttle));
-    const throttleFactor = 0.25 + 1.25 * clampedThrottle;
+    const throttleFactor = 0.25 + 1.5 * clampedThrottle;
 
     engineAction.timeScale = healthFactor * throttleFactor;
   }, [actions, level, throttle]);
