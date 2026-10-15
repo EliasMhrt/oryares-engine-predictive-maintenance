@@ -76,6 +76,29 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Throttled RUL fed to the 3D twin. Rapid telemetry drags would otherwise
+  // push a new prediction (and a full 3D scene re-render) every few hundred ms.
+  // The twin catches up to the latest value at most ~1.3x/second instead.
+  const [twinRul, setTwinRul] = useState(0);
+  const pendingTwinRulRef = useRef(0);
+  const twinSyncedRef = useRef(false);
+
+  useEffect(() => {
+    if (!prediction) return;
+    pendingTwinRulRef.current = prediction.rul_cycles;
+    if (!twinSyncedRef.current) {
+      twinSyncedRef.current = true;
+      setTwinRul(prediction.rul_cycles);
+    }
+  }, [prediction]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setTwinRul((prev) => (prev === pendingTwinRulRef.current ? prev : pendingTwinRulRef.current));
+    }, 750);
+    return () => window.clearInterval(id);
+  }, []);
   
   // Sidebar Toggle State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -368,7 +391,7 @@ export default function App() {
 
               {/* NEW: Render the 3D Engine Component */}
               <EngineTwinPanel
-                rulCycles={prediction.rul_cycles}
+                rulCycles={twinRul}
               />
             </>
           ) : (

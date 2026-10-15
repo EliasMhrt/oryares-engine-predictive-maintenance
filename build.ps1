@@ -7,6 +7,12 @@
     Usage (from the project root):
         powershell -ExecutionPolicy Bypass -File .\build.ps1
 #>
+param(
+    # Single source of truth for the web frontend. Override with -FrontendSource
+    # if the frontend is developed in a different checkout.
+    [string]$FrontendSource = (Join-Path $env:USERPROFILE 'Desktop\Engine simulation\React version v1.0\frontend')
+)
+
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
@@ -29,19 +35,44 @@ function Install-IfNeeded([string]$dir) {
     }
 }
 
-Write-Host '==> [1/4] Building frontend (Vite)' -ForegroundColor Cyan
+# Mirror the frontend source of truth into this project so the desktop build
+# never ships a stale copy. src/ and public/ are synced exactly (stale files
+# removed); the root config files are copied over.
+function Sync-Frontend([string]$src, [string]$dest) {
+    if (-not (Test-Path -LiteralPath $src)) {
+        Write-Host "   frontend source not found at '$src' - using existing copy in $dest" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "   syncing frontend from $src" -ForegroundColor DarkGray
+    foreach ($sub in 'src', 'public') {
+        $s = Join-Path $src $sub
+        if (Test-Path -LiteralPath $s) {
+            robocopy $s (Join-Path $dest $sub) /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "robocopy failed for '$sub' (exit $LASTEXITCODE)" }
+        }
+    }
+    foreach ($f in 'index.html', 'vite.config.ts', 'package.json', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', '.oxlintrc.json') {
+        $sf = Join-Path $src $f
+        if (Test-Path -LiteralPath $sf) { Copy-Item -LiteralPath $sf -Destination (Join-Path $dest $f) -Force }
+    }
+}
+
+Write-Host '==> [1/5] Syncing frontend from source' -ForegroundColor Cyan
+Sync-Frontend $FrontendSource (Join-Path $root 'frontend')
+
+Write-Host '==> [2/5] Building frontend (Vite)' -ForegroundColor Cyan
 Install-IfNeeded (Join-Path $root 'frontend')
 Push-Location (Join-Path $root 'frontend')
 try { npm run build } finally { Pop-Location }
 
-Write-Host '==> [2/4] Generating application icon' -ForegroundColor Cyan
+Write-Host '==> [3/5] Generating application icon' -ForegroundColor Cyan
 & $venvPython (Join-Path $root 'desktop\make_icon.py')
 
-Write-Host '==> [3/4] Packaging backend (PyInstaller)' -ForegroundColor Cyan
+Write-Host '==> [4/5] Packaging backend (PyInstaller)' -ForegroundColor Cyan
 Push-Location (Join-Path $root 'backend')
 try { & $pyinstaller --clean --noconfirm backend.spec } finally { Pop-Location }
 
-Write-Host '==> [4/4] Building Windows installer (electron-builder)' -ForegroundColor Cyan
+Write-Host '==> [5/5] Building Windows installer (electron-builder)' -ForegroundColor Cyan
 Install-IfNeeded (Join-Path $root 'desktop')
 Push-Location (Join-Path $root 'desktop')
 try { npm run dist } finally { Pop-Location }

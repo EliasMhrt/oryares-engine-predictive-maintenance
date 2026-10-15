@@ -17,6 +17,19 @@ const net = require("net");
 const fs = require("fs");
 const path = require("path");
 
+// ---------------------------------------------------------------------------
+// GPU selection
+// ---------------------------------------------------------------------------
+// Hybrid laptops (e.g. Intel iGPU + NVIDIA RTX) may bind Chromium's GPU process
+// to the integrated adapter, which is what caused the three.js engine twin to
+// lose its WebGL context. These switches must be appended before the app's
+// ready event, so they live at module top level.
+// Prefer the discrete/high-performance GPU when more than one is present.
+app.commandLine.appendSwitch("force_high_performance_gpu");
+// Lift Chromium's GPU blocklist so hardware acceleration stays on even for
+// drivers that would otherwise be demoted to software rendering.
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+
 const PRODUCT_NAME = "Oryares Engine Predictive Maintenance";
 const HEALTH_TIMEOUT_MS = 90000;
 

@@ -46,6 +46,25 @@ type GLTFResult = GLTF & {
 
 export type EngineMode = 'standard' | 'cutaway'
 
+// Discrete health levels derived from the continuous RUL. The 3D scene must
+// only react to the *level* changing, never to every numeric RUL tick: the
+// per-tick material churn (needsUpdate / shader recompiles) was the GPU spike
+// that caused intermittent WebGL context loss while dragging telemetry sliders.
+type EngineLevel = 'healthy' | 'warning' | 'critical' | 'stopped'
+
+function getEngineLevel(rul: number): EngineLevel {
+  if (rul > 60) return 'healthy'
+  if (rul >= 20) return 'warning'
+  if (rul > 5) return 'critical'
+  return 'stopped'
+}
+
+function levelColor(level: EngineLevel): string {
+  if (level === 'healthy') return '#4ade80'
+  if (level === 'warning') return '#fbbf24'
+  return '#ef4444'
+}
+
 // Add a custom prop for our AI predictions (RUL out of 100)
 type EngineProps = React.JSX.IntrinsicElements['group'] & {
   rul?: number
@@ -53,6 +72,7 @@ type EngineProps = React.JSX.IntrinsicElements['group'] & {
 }
 
 export function RealEngine({ rul = 100, mode = 'standard', ...props }: EngineProps) {
+  const level = getEngineLevel(rul)
   const group = React.useRef<THREE.Group>(null)
   const shellRef = useRef<THREE.Group>(null)
   const partsRef = useRef<THREE.Group>(null)
@@ -74,17 +94,16 @@ export function RealEngine({ rul = 100, mode = 'standard', ...props }: EnginePro
       engineAction.play();
     }
 
-    // Control the speed based on RUL (thresholds match the backend risk levels)
-    if (rul > 60) {
-      engineAction.timeScale = 1; // 100% normal speed
-    } else if (rul >= 20) {
-      engineAction.timeScale = 0.6; // 60% speed (Warning)
-    } else if (rul > 5) {
-      engineAction.timeScale = 0.2; // 20% speed (Critical)
-    } else {
-      engineAction.timeScale = 0; // RUL 5 or below: completely STOP the engine
+    // Control the speed from the discrete level only (thresholds match the
+    // backend risk levels). Depending on the level instead of the raw RUL
+    // means dragging a slider no longer restarts/renconfigures the mixer.
+    switch (level) {
+      case 'healthy': engineAction.timeScale = 1; break;   // 100% normal speed
+      case 'warning': engineAction.timeScale = 0.6; break; // 60% speed
+      case 'critical': engineAction.timeScale = 0.2; break; // 20% speed
+      case 'stopped': engineAction.timeScale = 0; break;   // STOP the engine
     }
-  }, [actions, rul]);
+  }, [actions, level]);
 
   // 2. Apply cutaway view transform
   useEffect(() => {
@@ -106,37 +125,32 @@ export function RealEngine({ rul = 100, mode = 'standard', ...props }: EnginePro
     }
   }, [mode, materials]);
 
-  // 3. Handle Predictive Maintenance Visual Warnings (Color)
+  // 3a. Normalize the outer casing appearance ONCE. This used to run on every
+  // RUL change and set `needsUpdate = true`, forcing a shader recompile each
+  // tick (the GPU spike behind the context-loss "retry" screen). It is static.
   useEffect(() => {
-    const healthColor = new THREE.Color();
-
-    if (rul > 60) {
-      healthColor.set('#4ade80'); // Healthy Green
-    } else if (rul >= 20) {
-      healthColor.set('#fbbf24'); // Warning Yellow
-    } else {
-      healthColor.set('#ef4444'); // Critical Red
-    }
-
-    // Keep the outer casing a clean white metal instead of tinting it with the health color
     const shellMaterial = materials['Inside Shell 2'];
-    if (shellMaterial) {
-      shellMaterial.color.set('#a59b9b');
-      shellMaterial.emissive.set('#000000');
-      shellMaterial.emissiveIntensity = 0;
-      shellMaterial.map = null;
-      shellMaterial.metalness = 0;
-      shellMaterial.roughness = 1;
-      shellMaterial.needsUpdate = true;
-    }
+    if (!shellMaterial) return;
 
-    // Tint the fan blades with the health color so the whole engine stays informative
+    shellMaterial.color.set('#a59b9b');
+    shellMaterial.emissive.set('#000000');
+    shellMaterial.emissiveIntensity = 0;
+    shellMaterial.map = null;
+    shellMaterial.metalness = 0;
+    shellMaterial.roughness = 1;
+    shellMaterial.needsUpdate = true;
+  }, [materials]);
+
+  // 3b. Tint the fan blades with the health color, but only when the discrete
+  // level changes. Color changes never recompile shaders.
+  useEffect(() => {
+    const healthColor = new THREE.Color(levelColor(level));
     const fanMaterials = materials as unknown as Record<string, THREE.MeshStandardMaterial | undefined>;
     for (const name of ['Fan 1', 'Fan 2', 'Fan 3', 'Fan 4', 'Fan 5']) {
       const material = fanMaterials[name];
       if (material) material.color.copy(healthColor);
     }
-  }, [rul, materials]);
+  }, [level, materials]);
 
   // If the GLTF model never resolved, render nothing and let the enclosing
   // Suspense/boundary decide what to show instead of throwing.

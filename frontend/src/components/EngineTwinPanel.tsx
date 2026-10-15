@@ -1,4 +1,5 @@
-import { Component, Suspense, memo, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Component, Suspense, memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { WebGLRenderer } from "three";
 import { Canvas, useThree } from "@react-three/fiber";
 import { ContactShadows, Environment, Html, Lightformer, OrbitControls } from "@react-three/drei";
 import { RealEngine, type EngineMode } from "./RealEngine";
@@ -11,46 +12,57 @@ const MODES: EngineMode[] = ["standard", "cutaway"];
 
 type WebGLSupport = { supported: boolean; error: string | null };
 
+// Probe result is cached for the whole session. Re-probing (and therefore
+// allocating a throwaway WebGL context) on every render/Retry click is itself
+// a known trigger for context loss: browsers cap the number of live contexts
+// per process and force-lose the oldest when the cap is exceeded.
+let webglProbe: WebGLSupport | null = null;
+let webglProbeCanvas: HTMLCanvasElement | null = null;
+
 // Try hard to obtain a WebGL2 context and capture the browser's real reason
-// when it fails (Chrome no longer falls back to software rendering, and on
-// dual-GPU laptops requesting "high-performance" can make creation fail).
-// IMPORTANT: every probed context is released immediately via
-// WEBGL_lose_context. A live probe context that is never released eats GPU
-// memory and, on dual-GPU systems, forces Chrome to juggle two contexts which
-// is a known trigger for GPU process crashes.
-function detectWebGL(): WebGLSupport {
-  // CRITICAL for dual-GPU laptops: request "low-power" FIRST so the probe
-  // lands on the integrated GPU and never wakes the discrete GPU. If the probe
-  // used the default power preference, Chrome may create the context on the
-  // discrete GPU, lose it, then let the real <Canvas> context switch back —
-  // that GPU hand-off is the #1 cause of the GPU process crash ("Aw, snap").
-  const candidates: Array<{ type: "webgl2"; attrs?: WebGLContextAttributes }> = [
-    { type: "webgl2", attrs: { failIfMajorPerformanceCaveat: false, powerPreference: "low-power" } },
-    { type: "webgl2", attrs: { failIfMajorPerformanceCaveat: false } },
-    { type: "webgl2", attrs: undefined },
+// when it fails. We prefer "high-performance" so the twin runs on the dedicated
+// GPU (e.g. an RTX 3050) rather than a weak integrated GPU, which resets the
+// context under the load this scene generates. Every probed context is released
+// immediately via WEBGL_lose_context so it cannot leak GPU memory.
+function detectWebGL(force = false): WebGLSupport {
+  if (webglProbe && !force) return webglProbe;
+
+  // A canvas whose context we lost cannot be re-probed cleanly, so grab the
+  // shared one if available and drop the reference (next probe allocates fresh).
+  const canvas = webglProbeCanvas ?? (webglProbeCanvas = document.createElement("canvas"));
+  webglProbeCanvas = null;
+
+  const candidates: Array<WebGLContextAttributes | undefined> = [
+    { failIfMajorPerformanceCaveat: false, powerPreference: "high-performance" },
+    { failIfMajorPerformanceCaveat: false },
+    undefined,
   ];
 
-  for (const { type, attrs } of candidates) {
+  for (const attrs of candidates) {
     try {
-      const canvas = document.createElement("canvas");
       let statusMessage: string | null = null;
       const handleError = (event: Event) => {
         statusMessage = (event as WebGLContextEvent).statusMessage || null;
       };
       canvas.addEventListener("webglcontextcreationerror", handleError);
-      const context = canvas.getContext(type, attrs);
+      const context = canvas.getContext("webgl2", attrs);
       canvas.removeEventListener("webglcontextcreationerror", handleError);
       if (context) {
         context.getExtension("WEBGL_lose_context")?.loseContext();
-        return { supported: true, error: null };
+        webglProbe = { supported: true, error: null };
+        return webglProbe;
       }
-      if (statusMessage) return { supported: false, error: statusMessage };
+      if (statusMessage) {
+        webglProbe = { supported: false, error: statusMessage };
+        return webglProbe;
+      }
     } catch {
       // Try the next candidate.
     }
   }
 
-  return { supported: false, error: null };
+  webglProbe = { supported: false, error: null };
+  return webglProbe;
 }
 
 function SceneFallback({ title, detail }: { title: string; detail: string }) {
@@ -100,10 +112,41 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode }, { failed: b
   }
 }
 
-// Listens for WebGL context loss and reports it up to the panel so we can show
-// a graceful fallback instead of a frozen / white screen.
-function WebGLGuard({ onLost }: { onLost: () => void }) {
+// Reads the actual GPU the browser assigned to this WebGL context. The
+// `powerPreference` hint is not enough on Windows dual-GPU laptops — Chrome
+// usually follows the OS/browser GPU assignment, so we surface the real
+// renderer string instead of guessing.
+function readGpuRenderer(gl: WebGLRenderer): string {
+  try {
+    const ctx = gl.getContext() as WebGL2RenderingContext | null;
+    if (!ctx) return "unknown";
+    const ext = ctx.getExtension("WEBGL_debug_renderer_info");
+    if (ext) {
+      return String(ctx.getParameter(ext.UNMASKED_RENDERER_WEBGL) || "unknown");
+    }
+    return String(ctx.getParameter(ctx.RENDERER) || "unknown");
+  } catch {
+    return "unknown";
+  }
+}
+
+// Listens for WebGL context loss/restore. On loss we preventDefault so the
+// browser is allowed to restore the SAME context (Three.js then re-initialises
+// it automatically) instead of us tearing down and rebuilding the renderer.
+function WebGLGuard({
+  onLost,
+  onRestored,
+  onRenderer,
+}: {
+  onLost: () => void;
+  onRestored: () => void;
+  onRenderer: (renderer: string) => void;
+}) {
   const gl = useThree((state) => state.gl);
+
+  useEffect(() => {
+    onRenderer(readGpuRenderer(gl));
+  }, [gl, onRenderer]);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -111,9 +154,14 @@ function WebGLGuard({ onLost }: { onLost: () => void }) {
       event.preventDefault();
       onLost();
     };
+    const handleRestored = () => onRestored();
     canvas.addEventListener("webglcontextlost", handleLost);
-    return () => canvas.removeEventListener("webglcontextlost", handleLost);
-  }, [gl, onLost]);
+    canvas.addEventListener("webglcontextrestored", handleRestored);
+    return () => {
+      canvas.removeEventListener("webglcontextlost", handleLost);
+      canvas.removeEventListener("webglcontextrestored", handleRestored);
+    };
+  }, [gl, onLost, onRestored]);
 
   return null;
 }
@@ -129,7 +177,7 @@ function EngineScene({ rulCycles, mode }: { rulCycles: number; mode: EngineMode 
 
       {/* Local-only environment (Lightformers, no CDN fetch): reflections work
           offline and can never crash the scene because of a network failure. */}
-      <Environment resolution={256}>
+      <Environment resolution={128}>
         <Lightformer intensity={0.8} rotation-x={Math.PI / 2} position={[0, 5, -9]} scale={[10, 10, 1]} />
         <Lightformer intensity={1} rotation-y={Math.PI / 2} position={[-5, 1, -1]} scale={[20, 0.1, 1]} />
         <Lightformer intensity={1} rotation-y={-Math.PI / 2} position={[10, 1, 0]} scale={[20, 1, 1]} />
@@ -161,10 +209,39 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
   const [mode, setMode] = useState<EngineMode>("standard");
   const [webgl, setWebgl] = useState<WebGLSupport>(() => detectWebGL());
   const [contextLost, setContextLost] = useState(false);
+  // Bumping this key remounts <Canvas> with a freshly created context, but ONLY
+  // on an explicit, debounced Retry click — never automatically.
+  const [renderKey, setRenderKey] = useState(0);
+  const [retryDisabled, setRetryDisabled] = useState(false);
+  const [gpu, setGpu] = useState<string>("");
+  const retryTimer = useRef<number | null>(null);
 
   const webglSupported = webgl.supported;
   const handleContextLost = useCallback(() => setContextLost(true), []);
-  const retryWebGL = () => setWebgl(detectWebGL());
+  const handleContextRestored = useCallback(() => setContextLost(false), []);
+  const handleRenderer = useCallback((renderer: string) => setGpu(renderer), []);
+
+  useEffect(() => () => {
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+  }, []);
+
+  // Shared cooldown so rapid clicks cannot spam new WebGL contexts.
+  const startRetryCooldown = useCallback(() => {
+    setRetryDisabled(true);
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = window.setTimeout(() => setRetryDisabled(false), 1000);
+  }, []);
+
+  const retryRender = useCallback(() => {
+    startRetryCooldown();
+    setContextLost(false);
+    setRenderKey((k) => k + 1);
+  }, [startRetryCooldown]);
+
+  const retryWebGL = useCallback(() => {
+    startRetryCooldown();
+    setWebgl(detectWebGL(true));
+  }, [startRetryCooldown]);
 
   // Determine text color based on RUL (matches backend risk thresholds)
   const getRulColor = (rul: number) => {
@@ -172,6 +249,10 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
     if (rul >= 20) return "#fbbf24"; // Warning Yellow
     return "#ef4444"; // Critical Red
   };
+
+  // Heuristic: an NVIDIA renderer string means the dedicated RTX 3050 is in
+  // use. Intel/AMD here almost always means the integrated GPU was selected.
+  const usingDiscreteGpu = /nvidia|rtx|geforce/i.test(gpu);
 
   return (
     <div className="card" style={{ flexGrow: 1, minHeight: "500px", display: "flex", flexDirection: "column", padding: "1.5rem" }}>
@@ -202,6 +283,25 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
           <span style={{ fontSize: "0.75rem", color: "#60A5FA", backgroundColor: "rgba(96, 165, 250, 0.1)", padding: "0.25rem 0.75rem", borderRadius: "9999px", border: "1px solid rgba(96,165,250,0.2)" }}>
             Live Rendering Active
           </span>
+          {gpu && (
+            <span
+              title={gpu}
+              style={{
+                maxWidth: "240px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontSize: "0.7rem",
+                color: usingDiscreteGpu ? "#4ade80" : "#fbbf24",
+                backgroundColor: usingDiscreteGpu ? "rgba(74,222,128,0.1)" : "rgba(251,191,36,0.1)",
+                padding: "0.25rem 0.75rem",
+                borderRadius: "9999px",
+                border: `1px solid ${usingDiscreteGpu ? "rgba(74,222,128,0.25)" : "rgba(251,191,36,0.25)"}`,
+              }}
+            >
+              GPU: {gpu}
+            </span>
+          )}
         </div>
       </div>
 
@@ -216,69 +316,79 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
         border: "1px solid #374151",
         boxShadow: "inset 0 0 20px rgba(0,0,0,0.5)"
       }}>
-        {webglSupported && !contextLost ? (
+        {webglSupported ? (
+          <>
             <Canvas
+              key={renderKey}
               camera={{ position: [0, 2, 7], fov: 45 }}
               // Cap the render scale: the panel spans most of the viewport and
-              // at full DPR the framebuffer + MSAA can reach several hundred MB,
-              // which is the usual reason the GPU process is killed on laptops
-              // with an integrated GPU.
-              dpr={[1, 1.5]}
+              // at full DPR the framebuffer + MSAA can reach several hundred MB.
+              // 1.25 keeps it crisp without spiking VRAM.
+              dpr={[1, 1.25]}
               gl={{
                 antialias: true,
                 alpha: true,
                 failIfMajorPerformanceCaveat: false,
-                // Pin the context to the integrated GPU. On dual-GPU laptops
-                // (Intel + NVIDIA/AMD) the default power preference lets Chrome
-                // switch GPUs once the scene gets busy (slider drags, orbiting),
-                // and that switch drops the context mid-frame and kills the GPU
-                // process -> "Aw, snap". Low-power prevents the hand-off.
-                powerPreference: "low-power",
+                // Route the renderer to the dedicated GPU. The twin is heavy
+                // (7 MB model, cubemap env, contact shadows); running it on a
+                // weak integrated GPU is what let the context reset under
+                // slider/dropdown interaction.
+                powerPreference: "high-performance",
               }}
             >
               <CanvasErrorBoundary>
                 <Suspense fallback={<SceneFallback title="Loading 3D engine..." detail="Preparing the digital twin." />}>
                   <EngineScene rulCycles={rulCycles} mode={mode} />
-                  <WebGLGuard onLost={handleContextLost} />
+                  <WebGLGuard onLost={handleContextLost} onRestored={handleContextRestored} onRenderer={handleRenderer} />
                 </Suspense>
               </CanvasErrorBoundary>
             </Canvas>
-        ) : contextLost ? (
-          <div style={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "0.5rem",
-            color: "#9CA3AF",
-            textAlign: "center",
-            padding: "2rem",
-            boxSizing: "border-box",
-          }}>
-            <span style={{ fontSize: "2rem" }}>⚙️</span>
-            <strong style={{ color: "#F87171" }}>
-              3D view interrupted
-            </strong>
-            <span style={{ fontSize: "0.85rem", maxWidth: "420px" }}>
-              The GPU lost the rendering context. Click retry to restart the 3D view.
-            </span>
-            <button
-              onClick={() => setContextLost(false)}
-              style={{
-                marginTop: "0.5rem",
-                padding: "6px 14px",
-                borderRadius: "6px",
-                cursor: "pointer",
-                border: "1px solid #4B5563",
-                color: "#081019",
-                background: "#60A5FA",
-              }}
-            >
-              Retry
-            </button>
-          </div>
+
+            {/* Kept as an overlay (not a replacement) so the SAME context can be
+                restored by the browser instead of being torn down and rebuilt. */}
+            {contextLost && (
+              <div style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "0.5rem",
+                color: "#9CA3AF",
+                textAlign: "center",
+                padding: "2rem",
+                boxSizing: "border-box",
+                backgroundColor: "rgba(17, 24, 39, 0.92)",
+                zIndex: 5,
+              }}>
+                <span style={{ fontSize: "2rem" }}>⚙️</span>
+                <strong style={{ color: "#F87171" }}>
+                  3D view interrupted
+                </strong>
+                <span style={{ fontSize: "0.85rem", maxWidth: "420px" }}>
+                  The GPU lost the rendering context. It usually restores on its own;
+                  if it doesn't, restart the 3D view.
+                </span>
+                <button
+                  onClick={retryRender}
+                  disabled={retryDisabled}
+                  style={{
+                    marginTop: "0.5rem",
+                    padding: "6px 14px",
+                    borderRadius: "6px",
+                    cursor: retryDisabled ? "not-allowed" : "pointer",
+                    opacity: retryDisabled ? 0.6 : 1,
+                    border: "1px solid #4B5563",
+                    color: "#081019",
+                    background: "#60A5FA",
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </>
         ) : (
           <div style={{
             width: "100%",
@@ -309,11 +419,13 @@ function EngineTwinPanel({ rulCycles }: EngineTwinPanelProps) {
             </span>
             <button
               onClick={retryWebGL}
+              disabled={retryDisabled}
               style={{
                 marginTop: "0.5rem",
                 padding: "6px 14px",
                 borderRadius: "6px",
-                cursor: "pointer",
+                cursor: retryDisabled ? "not-allowed" : "pointer",
+                opacity: retryDisabled ? 0.6 : 1,
                 border: "1px solid #4B5563",
                 color: "#081019",
                 background: "#60A5FA",
